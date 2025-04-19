@@ -2,46 +2,41 @@ from flask import Flask, request, jsonify
 import logging
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
-# Хранилище сессий
 sessionStorage = {}
 
 
 @app.route('/post', methods=['POST'])
 def main():
     try:
-        # Проверяем JSON
-        if not request.is_json:
+        req = request.get_json()
+        logging.info(f'Request: {req}')
+
+        # Проверка структуры запроса
+        if not all(key in req for key in ['session', 'request', 'version']):
             return jsonify({
                 "response": {
-                    "text": "Произошла ошибка: ожидается JSON",
+                    "text": "Ошибка: неверный формат запроса",
                     "end_session": False
                 },
                 "version": "1.0"
             }), 400
 
-        req = request.get_json()
-        logging.info(f'Request: {req}')
-
-        # Создаем базовый ответ
-        res = {
+        # Формируем базовый ответ
+        response = {
+            "version": req['version'],
+            "session": req['session'],
             "response": {
-                "end_session": False
-            },
-            "version": req.get("version", "1.0")
+                "end_session": False,
+                "text": "Произошла ошибка обработки запроса"
+            }
         }
 
-        # Обрабатываем запрос
-        handle_dialog(req, res)
+        handle_dialog(req, response)
 
-        logging.info(f'Response: {res}')
-        return jsonify(res)
+        logging.info(f'Response: {response}')
+        return jsonify(response)
 
     except Exception as e:
         logging.error(f'Error: {str(e)}')
@@ -55,15 +50,11 @@ def main():
 
 
 def handle_dialog(req, res):
-    # Получаем user_id из разных возможных мест в запросе
-    user_id = (
-            req.get('session', {}).get('user', {}).get('user_id') or
-            req.get('session', {}).get('user_id') or
-            "default_user"
-    )
+    user_id = req['session']['user']['user_id']
+    is_new_session = req['session']['new']
 
-    # Инициализация новой сессии
-    if req.get('session', {}).get('new', False):
+    if is_new_session:
+        # Инициализация новой сессии
         sessionStorage[user_id] = {
             'suggests': ["Не хочу.", "Не буду.", "Отстань!"],
             'attempts': 0
@@ -73,36 +64,32 @@ def handle_dialog(req, res):
         res['response']['buttons'] = get_suggests(user_id)
         return
 
-    # Обработка ответа пользователя
-    user_command = req.get('request', {}).get('original_utterance', '').lower()
+    # Обработка команд пользователя
+    user_command = req['request']['original_utterance'].lower()
 
-    if user_command in ['ладно', 'куплю', 'покупаю', 'хорошо']:
+    if any(word in user_command for word in ['ладно', 'куплю', 'покупаю', 'хорошо']):
         res['response']['text'] = 'Слона можно найти на Яндекс.Маркете!'
         res['response']['tts'] = 'Слона можно найти на Яндекс.Маркете!'
         res['response']['end_session'] = True
         return
 
-    # Увеличиваем счетчик попыток
+    # Увеличиваем счетчик отказов
     sessionStorage[user_id]['attempts'] += 1
 
-    # Формируем ответ
-    res['response']['text'] = f"Все говорят '{user_command}', а ты купи слона!"
-    res['response']['tts'] = f"Все говорят '{user_command}', а ты купи слона!"
+    # Формируем ответ с учетом количества попыток
+    attempts = sessionStorage[user_id]['attempts']
+    if attempts > 3:
+        res['response']['text'] = f"Вы уже {attempts} раз отказались! Ну купите слона!"
+    else:
+        res['response']['text'] = f"Все говорят '{user_command}', а ты купи слона!"
+
+    res['response']['tts'] = res['response']['text']
     res['response']['buttons'] = get_suggests(user_id)
 
 
 def get_suggests(user_id):
-    if user_id not in sessionStorage:
-        return []
-
     suggests = sessionStorage[user_id]['suggests']
-    buttons = [
-        {"title": suggest, "hide": True}
-        for suggest in suggests[:2]
-    ]
-
-    # Ротация подсказок
-    sessionStorage[user_id]['suggests'] = suggests[1:] + [suggests[0]]
+    buttons = [{"title": suggest, "hide": True} for suggest in suggests[:2]]
 
     # Добавляем кнопку с ссылкой
     buttons.append({
@@ -111,8 +98,11 @@ def get_suggests(user_id):
         "hide": True
     })
 
+    # Ротация подсказок
+    sessionStorage[user_id]['suggests'] = suggests[1:] + [suggests[0]]
+
     return buttons
 
 
 if __name__ == '__main__':
-    app.run()
+    app.run(host='0.0.0.0', port=5000)
