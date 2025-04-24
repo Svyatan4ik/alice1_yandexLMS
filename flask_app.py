@@ -1,15 +1,17 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, Response
+import json
 import logging
 from collections import OrderedDict
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Хранилище сессий
 sessionStorage = {}
 
 
-def make_response():
-    """Создает ответ с гарантированным порядком полей"""
+def create_response():
+    """Создает шаблон ответа с правильным порядком полей"""
     return OrderedDict([
         ('text', ''),
         ('tts', ''),
@@ -18,89 +20,126 @@ def make_response():
     ])
 
 
+def build_full_response(req, response_data):
+    """Собирает полный ответ с сохранением порядка полей"""
+    return OrderedDict([
+        ('response', response_data),
+        ('session', req.get('session', {})),
+        ('version', req.get('version', '1.0'))
+    ])
+
+
 @app.route('/post', methods=['POST'])
 def main():
     try:
+        # Получаем и проверяем запрос
         req = request.get_json()
-        logging.info(f'Request: {req}')
+        if not req:
+            return error_response('Invalid JSON received')
 
-        # Проверка структуры запроса
-        if not all(key in req for key in ['session', 'request', 'version']):
-            response = make_response()
-            response['text'] = response['tts'] = "Ошибка: неверный формат запроса"
-            return jsonify({
-                "version": "1.0",
-                "response": response
-            }), 400
+        logging.info(f'Incoming request: {json.dumps(req, indent=2, ensure_ascii=False)}')
 
-        # Создаем базовый ответ с правильным порядком полей
-        response = {
-            "version": req['version'],
-            "session": req['session'],
-            "response": make_response()
-        }
+        # Обрабатываем диалог
+        response_data = handle_dialog(req)
 
-        handle_dialog(req, response)
+        # Формируем полный ответ
+        full_response = build_full_response(req, response_data)
 
-        logging.info(f'Response: {response}')
-        return jsonify(response)
+        logging.info(f'Outgoing response: {json.dumps(full_response, indent=2, ensure_ascii=False)}')
+
+        # Сериализуем с сохранением порядка
+        return Response(
+            json.dumps(full_response, ensure_ascii=False),
+            mimetype='application/json'
+        )
 
     except Exception as e:
-        logging.error(f'Error: {str(e)}')
-        response = make_response()
-        response['text'] = response['tts'] = f"Произошла ошибка: {str(e)}"
-        return jsonify({
-            "version": "1.0",
-            "response": response
-        }), 500
+        logging.error(f'Error: {str(e)}', exc_info=True)
+        return error_response(str(e))
 
 
-def handle_dialog(req, res):
-    user_id = req['session']['user']['user_id']
-    is_new_session = req['session']['new']
+def error_response(error_msg):
+    """Создает ответ об ошибке"""
+    response = create_response()
+    response['text'] = f'Произошла ошибка: {error_msg}'
+    response['tts'] = response['text']
+    return Response(
+        json.dumps({
+            'response': response,
+            'version': '1.0'
+        }, ensure_ascii=False),
+        mimetype='application/json',
+        status=500
+    )
 
-    if is_new_session:
+
+def handle_dialog(req):
+    """Основная логика обработки диалога"""
+    response = create_response()
+
+    # Получаем идентификатор пользователя
+    user_id = req.get('session', {}).get('user', {}).get('user_id', 'unknown')
+
+    # Новая сессия
+    if req.get('session', {}).get('new', False):
         sessionStorage[user_id] = {
             'suggests': ["Не хочу.", "Не буду.", "Отстань!"],
             'attempts': 0
         }
-        res['response']['text'] = 'Привет! Купи слона!'
-        res['response']['tts'] = 'Привет! Купи слона!'
-        res['response']['buttons'] = get_suggests(user_id)
-        return
+        response['text'] = 'Привет! Купи слона!'
+        response['tts'] = 'Привет! Купи слона!'
+        response['buttons'] = get_suggests(user_id)
+        return response
 
-    user_command = req['request']['original_utterance'].lower()
+    # Обрабатываем команду пользователя
+    user_command = req.get('request', {}).get('original_utterance', '').lower()
 
+    # Пользователь согласился
     if any(word in user_command for word in ['ладно', 'куплю', 'покупаю', 'хорошо']):
-        res['response']['text'] = 'Слона можно найти на Яндекс.Маркете!'
-        res['response']['tts'] = 'Слона можно найти на Яндекс.Маркете!'
-        res['response']['end_session'] = True
-        return
+        response['text'] = 'Слона можно найти на Яндекс.Маркете!'
+        response['tts'] = 'Слона можно найти на Яндекс.Маркете!'
+        response['end_session'] = True
+        return response
 
+    # Увеличиваем счетчик отказов
+    sessionStorage.setdefault(user_id, {'attempts': 0, 'suggests': []})
     sessionStorage[user_id]['attempts'] += 1
+
+    # Формируем ответ в зависимости от количества попыток
     attempts = sessionStorage[user_id]['attempts']
-
     if attempts > 3:
-        response_text = f"Вы уже {attempts} раз отказались! Ну купите слона!"
+        response['text'] = f"Вы уже {attempts} раз отказались! Ну купите слона!"
     else:
-        response_text = f"Все говорят '{user_command}', а ты купи слона!"
+        response['text'] = f"Все говорят '{user_command}', а ты купи слона!"
 
-    res['response']['text'] = response_text
-    res['response']['tts'] = response_text
-    res['response']['buttons'] = get_suggests(user_id)
+    response['tts'] = response['text']
+    response['buttons'] = get_suggests(user_id)
+
+    return response
 
 
 def get_suggests(user_id):
-    suggests = sessionStorage[user_id]['suggests']
-    buttons = [{"title": suggest, "hide": True} for suggest in suggests[:2]]
+    """Генерирует подсказки для ответа"""
+    suggests = sessionStorage.get(user_id, {}).get('suggests', [])
 
-    buttons.append({
-        "title": "Ладно",
-        "url": "https://market.yandex.ru/search?text=слон",
-        "hide": True
-    })
+    buttons = []
+    for suggest in suggests[:2]:
+        buttons.append(OrderedDict([
+            ('title', suggest),
+            ('hide', True)
+        ]))
 
-    sessionStorage[user_id]['suggests'] = suggests[1:] + [suggests[0]]
+    # Добавляем кнопку с ссылкой
+    buttons.append(OrderedDict([
+        ('title', 'Ладно'),
+        ('url', 'https://market.yandex.ru/search?text=слон'),
+        ('hide', True)
+    ]))
+
+    # Обновляем подсказки для следующего раза
+    if suggests:
+        sessionStorage[user_id]['suggests'] = suggests[1:] + [suggests[0]]
+
     return buttons
 
 
