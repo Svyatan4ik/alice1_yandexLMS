@@ -1,25 +1,48 @@
 #!/bin/bash
+# deploy_alice_skill.sh - Упрощенный скрипт для развертывания навыка Алисы
 
-# Exit early on errors
+# Выход при ошибках
 set -eu
 
-# Python buffers stdout. Without this, you won't see what you "print" in the Activity Logs
-export PYTHONUNBUFFERED=true
+# --- Конфигурация ---
+APP_NAME="alice_skill"
+GIT_REPO="https://github.com/Svyatan4ik/alice1_yandexLMS"  # Замените на ваш репозиторий
+PYTHON_VERSION="3.9"                                     # Версия Python
+PORT=5000                                               # Порт для Flask
 
-# Install Python 3 virtual env
-VIRTUALENV=./venv
+# --- 1. Проверка зависимостей ---
+echo "🔍 Проверяем зависимости..."
+command -v python3 >/dev/null 2>&1 || { echo "❌ Python3 не установлен"; exit 1; }
+command -v git >/dev/null 2>&1 || { echo "❌ Git не установлен"; exit 1; }
 
-if [ ! -d $VIRTUALENV ]; then
-  python3 -m venv $VIRTUALENV
+# --- 2. Клонирование репозитория ---
+echo "📥 Клонируем репозиторий..."
+if [ ! -d "$APP_NAME" ]; then
+  git clone "$GIT_REPO" "$APP_NAME"
+  cd "$APP_NAME"
+else
+  cd "$APP_NAME"
+  git pull
 fi
 
-# Install pip into virtual environment
-if [ ! -f $VIRTUALENV/bin/pip ]; then
-  curl --silent --show-error --retry 5 https://bootstrap.pypa.io/pip/3.7/get-pip.py | $VIRTUALENV/bin/python
-fi
+# --- 3. Настройка виртуального окружения ---
+echo "🐍 Создаем виртуальное окружение Python $PYTHON_VERSION..."
+python3 -m venv venv
+source venv/bin/activate
 
-# Install the requirements
-$VIRTUALENV/bin/pip install -r requirements.txt
+# --- 4. Установка зависимостей ---
+echo "📦 Устанавливаем зависимости..."
+pip install --upgrade pip
+pip install -r requirements.txt
 
-# Run your glorious application
-$VIRTUALENV/bin/python3 flask_app.py
+# --- 5. Запуск приложения ---
+echo "🚀 Запускаем Flask-приложение..."
+echo "➡️ Вебхук должен быть указан вручную в кабинете разработчика:"
+echo "   URL: http://$(hostname -I | awk '{print $1}'):$PORT/post"
+echo "   Или: http://your-public-ip:$PORT/post"
+
+flask run --host=0.0.0.0 --port=$PORT
+
+# --- Подсказка для Ngrok (если нужно) ---
+echo "ℹ️ Для тестирования извне можно использовать Ngrok:"
+echo "   ngrok http $PORT"
